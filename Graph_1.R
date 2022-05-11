@@ -51,4 +51,3 @@ anim_save(filename = "grafico_1.MP4", p)
 
 p <- animate(grafico_1, fps = 6, height = 500, width = 900, end_pause = 50)
 anim_save(filename = "grafico_1.gif", p)
-
