@@ -13,8 +13,13 @@ library(ggplot2)
 library(gganimate)
 library(magrittr)
 library(gifski)
+library(readr)
 library(av)
 
+####### Importando dados ########
+
+hist_reclam_2 <- read_csv("hist_reclam_2")
+View(hist_reclam_2)
 
 ######## Gráfico reclamações vs quantidade de clientes ########
 
