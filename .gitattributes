@@ -1,0 +1,2 @@
+hist_dre filter=lfs diff=lfs merge=lfs -text
+hist_reclam filter=lfs diff=lfs merge=lfs -text
