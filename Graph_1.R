@@ -9,6 +9,10 @@
 
 
 ###########################
+install.packages("ggplot2")
+install.packages("gganimate")
+install.packages("gifski")
+install.packages("av")
 library(ggplot2)
 library(gganimate)
 library(magrittr)
@@ -18,7 +22,7 @@ library(av)
 
 ####### Importando dados ########
 
-hist_reclam_2 <- read_csv("hist_reclam_2")
+hist_reclam_2 <- read.csv2("hist_reclam_2")
 View(hist_reclam_2)
 
 ######## Gráfico reclamações vs quantidade de clientes ########
