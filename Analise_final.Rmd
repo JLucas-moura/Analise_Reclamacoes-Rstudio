@@ -1,0 +1,906 @@
+---
+title: "Análise_Reclamações"
+author: "João Lucas"
+date: '2022-07-08'
+output:
+  rmdformats::robobook:
+    self_contained: true
+    thumbnails: false
+    lightbox: true
+    gallery: true
+    highlight: tango
+  pdf_document: default
+
+---
+
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Introdução
+
+Essa análise busca fazer um breve apanhado das principais reclamações contra bancos e outras instituições financeiras ao seu órgão regulador, o Banco Central. O nosso objetivo será avaliar os principais tipos de reclamações que afligem os maiores bancos do país. Será observada também a evolução dos dados a cada trimestre.
+
+# Tratando dos dados
+
+Pra análise das reclamações usaremos os dados do Ranking de Reclamações do Banco central disponibilizados no seguinte site: <https://www.bcb.gov.br/estabilidadefinanceira/rankingreclamacoes>.
+
+Usaremos as seguintes bibliotecas:
+
+```{r library, message=FALSE, warning=FALSE, paged.print=FALSE}
+library(plyr)
+library(zoo)
+library(knitr)
+library(gganimate)
+library(gifski)
+library(av)
+library(scales)
+library(tidyverse)
+library(viridis)
+library(patchwork)
+library(wordcloud2)
+library(RColorBrewer)
+library(SnowballC)
+library(wordcloud)
+library(tm)
+library(NLP)
+library(ggwordcloud)
+
+```
+
+Primeiramente, já com os arquivos baixados no nosso diretório principal, faremos a concatenação no modelo de dados em painel, ou seja, empilhando as informações por data.
+
+
+
+```{r hist_reclam, message=FALSE, warning=FALSE, paged.print=FALSE}
+hist_reclam <- data.frame()
+for (n in 1:20) {
+  hist_reclam <- rbind(hist_reclam,
+                       read_delim(paste("dados_raclam/Bancos+e+financeiras+-+Irregularidades+por+instituicao+financeira (", n, ")", ".csv", sep = ""), 
+                                  delim = ";", escape_double = FALSE, locale = locale(encoding = "LATIN1"), 
+                                  trim_ws = TRUE))
+}
+```
+
+
+Vale ressaltar que temos dois tipos de dados. O `hist_reclam` contém todos os diferentes tipos de reclamações que o banco central regula, já o `hist_reclam_2` é mais generalista e contém a quantidade total de reclamações por período analisado.
+
+```{r hist_reclam_2, message=FALSE, warning=FALSE, paged.print=FALSE}
+hist_reclam_2 <- data.frame()
+for (n in 6:25) {
+  hist_reclam_2 <- rbind.fill(hist_reclam_2,
+                              read_delim(paste("dados_reclam_2/Bancos+e+financeiras+-+Reclamacoes+e+quantidades+de+clientes+por+instituicao+financeira (", n, ")", ".csv", sep = ""), 
+                                         delim = ";", escape_double = FALSE, locale = locale(encoding = "LATIN1"), 
+                                         trim_ws = TRUE))
+}
+```
+
+
+Renomeando o nome das colunas com `colnames`, caracterizando empresas para "mais que 4 milhões de habitantes" ou "menos de 4 milhões de habitantes" e retirando o símbolo de número da coluna `Trimestre`
+```{r colnames, message=FALSE, warning=FALSE, results='asis'}
+colnames(hist_reclam_2) <- c("Ano", "Trimestre",
+                             "Categoria", "Tipo",
+                             "CNPJ.IF", "Instituição.financeira",
+                             "Índice", "Quantidade.de.reclamações.reguladas.procedentes",
+                             "Quantidade.de.reclamações.reguladas...outras",
+                             "Quantidade.de.reclamações.não.reguladas",
+                             "Quantidade.total.de.reclamações",
+                             "Quantidade.total.de.clientes...CCS.e.SCR",
+                             "Quantidade.de.clientes...CCS", "Quantidade.de.clientes...SCR",
+                             "Quantidade.de.clientes...FGC", "X")
+
+colnames(hist_reclam) <- c("Ano", "Trimestre",
+                           "Categoria", "Tipo",
+                           "CNPJ.IF", "Instituição.financeira",
+                           "Irregularidade", "Quantidade.de.reclamações.reguladas.procedentes",
+                           "Quantidade.de.reclamações.reguladas...outras",
+                           "Quantidade.de.reclamações.não.reguladas",
+                           "Quantidade.total.de.reclamações", "X")
+```
+
+
+Adicionando a variável `categoria_2`, se empresa maior que 4 milhões:
+```{r categoria_2, message=FALSE, warning=FALSE, results='asis'}
+hist_reclam_2$Categoria_2 <- hist_reclam_2$Quantidade.total.de.clientes...CCS.e.SCR>4000000
+hist_reclam_2$Categoria_2[is.na(hist_reclam_2$Categoria_2)] <- FALSE
+hist_reclam_2$Categoria_2 <- replace(hist_reclam_2$Categoria_2, hist_reclam_2$Categoria_2 == "FALSE", "Menos de 4 milhões de clientes")
+hist_reclam_2$Categoria_2 <- replace(hist_reclam_2$Categoria_2, hist_reclam_2$Categoria_2 == "TRUE", "Mais de 4 milhões de clientes")
+```
+
+Tirando o símbolo de número do 1 e 2  data frame:
+```{r sinal numero, message=FALSE, warning=FALSE, results='asis'}
+hist_reclam_2$Trimestre = gsub("\\º","",hist_reclam_2$Trimestre)
+
+hist_reclam$Trimestre = gsub("\\º","",hist_reclam$Trimestre)
+```
+
+Inserindo colunas de apoio para modificar o formato da date para "Ano-Trimestre":
+
+```{r colunas apoio, message=FALSE, warning=FALSE, results='asis'}
+hist_reclam_2$tri <- ifelse(hist_reclam_2$Trimestre == 2, 4, 
+                            ifelse(hist_reclam_2$Trimestre == 3, 7,
+                                   ifelse(hist_reclam_2$Trimestre == 4, 10, 1)))
+hist_reclam_2$date <- as.Date(paste0(hist_reclam_2$tri, '-', 1, '-', hist_reclam_2$Ano), format = "%m-%d-%Y")
+
+hist_reclam <- hist_reclam %>% 
+  mutate(tri = ifelse(Trimestre == 2, 4, 
+                      ifelse(Trimestre == 3, 7,
+                             ifelse(Trimestre == 4, 10, 1)))) %>% 
+  mutate(date = as.Date(paste0(tri, '-', 1, '-', Ano), format = "%m-%d-%Y" ))
+
+```
+
+Inserindo coluna com data no formato "Ano-Trimestre":
+
+```{r Ano-Trimestre,  message=FALSE, warning=FALSE, results='asis'}
+hist_reclam_2$date_2 <- as.yearqtr(hist_reclam_2$date, format = "%m-%d-%Y")
+
+hist_reclam$date_2 <- as.yearqtr(hist_reclam$date, format = "%m-%d-%Y")
+```
+
+Removendo as colunas indesejadas:
+
+```{r excluindo col,  message=FALSE, warning=FALSE, results='asis'}
+hist_reclam <- hist_reclam[,-c(12)]
+
+hist_reclam_2 <- hist_reclam_2[,-c(16,17)]
+```
+
+Agora com os dados do `hist_reclam` já tratados, podemos usar a função `summary()` para obter as informações gerais do data-frame.
+
+```{r summary hist_reclam}
+summary(hist_reclam)
+```
+
+Faremos o mesmo para `hist_reclam_2`.
+
+```{r summary hist_reclam_2}
+summary(hist_reclam_2)
+```
+
+
+## Quantidade de clientes e número de reclamações
+
+Existe relação entre o tamanho das instituições financeiras e a quantidade de reclamações? Obviamente uma instituição grande terá maior quantidade de reclamações, mas em termos proporcionais será correto afirmar tal coisa?
+
+Buscando responder essa pergunta desenvolveremos um gráfico com o logaritmo das quantidades totais de clientes, no eixo Y, e das quantidades totais de reclamações, no eixo X. Será feita uma animação para auxiliar na visualização da evolução dos dados no tempo através do pacote `gganimate`.
+
+```{r gráfico gganimate, message=FALSE, warning=FALSE, results='asis'}
+grafico_1 <- ggplot(hist_reclam_2,
+                    aes(size= I(4), 
+                        shape  = Tipo, 
+                        color = Categoria_2, 
+                        x = log(Quantidade.total.de.clientes...CCS.e.SCR), 
+                        y = log(Quantidade.de.reclamações.reguladas.procedentes)))+
+  geom_point(alpha = 0.6)+
+  theme_classic()+
+  theme(text = element_text(size = 17))+
+  theme(legend.text = element_text(size = 13))+
+  guides(colour = guide_legend(override.aes = list(size=5)))+
+  guides(shape = guide_legend(override.aes = list(size=5)))+
+  scale_y_continuous(breaks = seq(-2, 20, 2))+
+  #theme(legend.position = "bottom", legend.text = element_text(size = 10))+
+  labs(
+    x = "Log(Quantidade de clientes)",
+    y = "Log(Quantidade de reclamações)",
+    shape = "Categoria",
+    color = "Tamanho Instituição",
+    title = "Reclamação contra bancos e outras instituições financeiras ao Bacen",
+    #subtitle = "Reclamações vs Quantidade de clientes (2021)",
+    caption = "Fonte: BCB\nElaboração própria")
+
+grafico_1 <- grafico_1 + transition_time(Ano)+
+  labs(subtitle = "Reclamações vs Quantidade de clientes ({as.integer(frame_time)})")
+
+animate(grafico_1, fps = 6, height = 500, width = 900, end_pause = 50)
+```
+
+
+Como pode ser visto no gráfico, a maioria dos bancos com mais de 4 milhões de clientes concentram o maior número de reclamações. Dessa forma, focaremos nossa análise nos 5 maiores bancos com histórico de reclamação na base de dados do Banco central.
+
+Faremos mais um breve tratamento dos dados para selecionar as 5 maiores instituições por trimestre, usando a base `hist_reclam_2`.
+
+```{r}
+hist_reclam_2 %>% 
+  mutate(Trimestre = as.yearqtr(as.Date(paste0(Ano,'-', ifelse(Trimestre == 2, 4,
+                                                               ifelse(Trimestre == 3, 7,
+                                                                      ifelse(Trimestre == 4, 10, 1))),
+                                               '-', 01)))) %>% 
+  group_by(Trimestre) %>% 
+  dplyr::select(c(Trimestre, `Instituição.financeira`, `Quantidade.total.de.clientes...CCS.e.SCR`)) %>% 
+  group_by(Trimestre) %>% 
+  top_n(5, `Quantidade.total.de.clientes...CCS.e.SCR`) -> data_plot_hist_2_total_clientes
+
+colnames(data_plot_hist_2_total_clientes) <-  c('date', 'instituicao', 'quantidadeclientes')
+
+head(data_plot_hist_2_total_clientes, n = 5)
+```
+
+Executando o gráfico a partir dos dados acima:
+
+```{r gráfico quant clienetes, fig.align = 'center', fig.height=10, fig.width=16}
+data_plot_hist_2_total_clientes %>% 
+  ggplot(aes(x = date, y = quantidadeclientes, color = instituicao)) +
+  geom_line(size = 1) +
+  geom_point(size = 5, alpha = .5) +
+  labs(x = 'Periodo', y = 'Quantidade Total de Clientes',
+       title = 'Quantidade total de Clientes',
+       subtitle = 'Referente as 5 maiores instituicoes financeiras (por Trimestre)',
+       caption = "Fonte: BCB\nElaboração própria") +
+  scale_y_continuous(labels = comma) +
+  scale_color_viridis_d() +
+  scale_x_yearqtr(format = "%YT%q",
+                  breaks = seq(from = min(data_plot_hist_2_total_clientes$date), 
+                               to = max(data_plot_hist_2_total_clientes$date), by = 0.25)) +
+  guides(color = guide_legend(ncol = 1))+
+  theme_minimal() +
+  theme(legend.position = "bottom",
+        legend.title = element_blank(),
+        legend.text = element_text(size = 15),
+        plot.title = element_text(size = 30),
+        plot.subtitle = element_text(size = 20),
+        text = element_text(size = 16),
+        axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
+
+
+O gráfico acima nos mostra os 5 maiores bancos por trimestre, desde 2017 até 2021. Pode-se perceber que todos os bancos, com exceção da Caixa Econômica Federal, mantêm um crescimento semelhante na base de clientes.
+
+O crescimento rápido e abrupto da carteira de clientes da caixa é explicado pelo Auxílo Brasil que se foi aprovado no segundo trimestre de 2020. Tal auxílio já atendeu mais de 39 milhões de famílias que foram financeiramente impactadas pelos efeitos da COVID-19. Como o seu pagamento está sendo feito através de uma conta na Caixa Econômica Federal, resultou nesse aumento massivo na base de clientes da instituição que podemos visualizar no gráfico acima.
+
+Veremos agora a evolução do total de reclamações para essas 5 maiores instituições financeiras:  Bradesco, Itaú, Caixa, Banco do Brasil e Santander.
+
+Preparando os dados para o gráfico de reclamações:
+
+```{r dados p graf reclm total}
+top5Bancos <- c('BRADESCO (conglomerado)', 'BB (conglomerado)',
+                'CAIXA ECONÔMICA FEDERAL (conglomerado)',
+                'ITAU (conglomerado)', 'SANTANDER (conglomerado)')
+
+filter(hist_reclam_2,
+       Instituição.financeira %in% top5Bancos) %>% 
+  mutate(Trimestre = as.yearqtr(as.Date(paste0(Ano,'-', ifelse(Trimestre == 2, 4,
+                                                               ifelse(Trimestre == 3, 7,
+                                                                      ifelse(Trimestre == 4, 10, 1))),
+                                               '-', 01)))) %>% 
+  group_by(Trimestre) %>% 
+  dplyr::select(c(Trimestre, `Instituição.financeira`, `Quantidade.total.de.reclamações`, `Quantidade.total.de.reclamações`,`Quantidade.total.de.clientes...CCS.e.SCR`)) %>% 
+  group_by(Trimestre) %>% 
+  top_n(5, `Quantidade.total.de.reclamações`) -> data_plot_hist_2_reclamacoes
+
+colnames(data_plot_hist_2_reclamacoes) <-  c('date', 'instituicao', 'reclamacoes', 'quanidadeclientes')
+```
+
+
+Executando o gráfico a partir dos dados acima:
+
+```{r gráfico reclam total, fig.align = 'center', fig.height=10, fig.width=15}
+data_plot_hist_2_reclamacoes %>% 
+  ggplot(aes(x = date, y = reclamacoes, color = instituicao)) +
+  geom_line(size = 1) +
+  geom_point(size = 5, alpha = .5) +
+  labs(x = 'Periodo', y = 'Quantidade Total de Reclamações',
+       title = 'Quantidade Total de Reclamações',
+       subtitle = 'Referente às 5 maiores instituições financeiras (por Trimestre)',
+       caption = "Fonte: BCB\nElaboração própria") +
+  scale_y_continuous(labels = comma) +
+  scale_color_viridis_d() +
+  scale_x_yearqtr(format = "%YT%q",
+                  breaks = seq(from = min(data_plot_hist_2_total_clientes$date), 
+                               to = max(data_plot_hist_2_total_clientes$date), by = 0.25)) +
+  guides(color = guide_legend(ncol = 1))+
+  theme_minimal() +
+  theme(legend.position = "bottom",
+        legend.title = element_blank(),
+        legend.text = element_text(size = 15),
+        plot.title = element_text(size = 30),
+        plot.subtitle = element_text(size = 20),
+        text = element_text(size = 16),
+        axis.text.x = element_text(angle = 45, hjust = 1))
+  
+```
+
+
+O gráfico acima corrobora com o fenômeno do Auxílio Brasil. Como houve grande aumento do número de clientes e a inclusão de um serviço novo é possível observar aumento exponencial dos números absolutos de reclamação da caixa econômica.
+
+Os outros bancos vêm apresentando um movimento de queda com o passar dos anos em termos absolutos e mantém a tendência de forma conjunta. Os dados aqui trabalhados não permitem aferir se o número de clientes desses bancos está crescendo acima das fintechs, como Nubak, Banco Inter, PicPay, C6bank entre outros. Logo, podemos estar deixando passar uma perda de crescimento da carteira de modo geral e, consequentemente, redução do número de reclamações.
+
+Obviamente, para uma análise com relação a qualidade da experiência do cliente junto a instituição financeira é preciso levar em consideração o tamanho da instituição. Logo, para melhor visualização dos dados e comparação das instituições financeiras em questão, montaremos um novo gráfico dividindo o eixo Y (número de reclamações), pela quantidade de clientes.
+
+Faremos então mais um breve tratamento dos dados:
+
+```{r indice de reclam}
+filter(hist_reclam_2,
+       Instituição.financeira %in% top5Bancos) %>%
+  mutate(Trimestre = as.yearqtr(as.Date(paste0(Ano,'-', ifelse(Trimestre == 2, 4,
+                                                               ifelse(Trimestre == 3, 7,
+                                                                      ifelse(Trimestre == 4, 10, 1))),
+                                               '-', 01))),
+         indice = Quantidade.total.de.reclamações/Quantidade.total.de.clientes...CCS.e.SCR) %>% 
+  group_by(Trimestre) %>% 
+  dplyr::select(c(`Trimestre`, `Instituição.financeira`, `Quantidade.total.de.reclamações`,`Quantidade.total.de.clientes...CCS.e.SCR`, `indice`)) %>%
+  group_by(Trimestre) %>% 
+  top_n(5, Quantidade.total.de.clientes...CCS.e.SCR) -> data_plot_hist_2_indice
+
+colnames(data_plot_hist_2_indice) <-  c('date', 'instituicao', 'reclamacoes', 'quantidadeclientes', 'indice')
+```
+
+Agora podemos executar o gráfico que representa o índice de reclamações das 5 maiores instituições.
+
+```{r, fig.align = 'center', fig.align = 'center', fig.height=10, fig.width=15}
+data_plot_hist_2_indice %>% 
+  ggplot(aes(x = date, y = indice, color = instituicao)) +
+  geom_line(size = 1) +
+  geom_point( size = 5, alpha = .5) +
+  labs(x = 'Periodo', y = 'Reclamações por clientes',
+       title = 'Reclamações por número de clientes',
+       subtitle = 'Referente às 8 maiores instituições financeiras (por Trimestre)',
+       caption = "Fonte: BCB\nElaboração própria") +
+  scale_y_continuous(labels = percent) +
+  scale_color_viridis_d() +
+  scale_x_yearqtr(format = "%YT%q",
+                  breaks = seq(from = min(data_plot_hist_2_total_clientes$date), 
+                               to = max(data_plot_hist_2_total_clientes$date), by = 0.25)) +
+  guides(color = guide_legend(ncol = 1))+
+  theme_minimal() +
+  theme(legend.position = "bottom",
+        legend.title = element_blank(),
+        legend.text = element_text(size = 15),
+        plot.title = element_text(size = 30),
+        plot.subtitle = element_text(size = 20),
+        text = element_text(size = 16),
+        axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+Nitidamente é possível tirar algumas breves conclusões. Primeiramente, se desconsiderarmos o evento COVID-19, as instituições estão reduzindo o seu índice de reclamações. Tal redução pode estar relacionada com a tendência de redução de agência e automação dos processos bancários, evitando assim erros humanos, filas em agências bancárias, entre outras situações que poderiam gerar reclamação.
+
+Sobre a Caixa Econômica, é nítido que a fuga dá média foi um fenômeno atípico, e logo após do início dos pagamentos dos auxílios o seu índice de reclamações se regularizou.
+
+Já o Santander vem mantendo elevado índice de reclamações desde 2017 e lidera tal quesito em comparação aos pares analisados. A pandemia também afetou muito a qualidade dos serviços prestados pelo banco de modo geral. Não é possível nem aferir nenhuma outra causa a alta abrupta na pandemia, uma vez que os outros bancos não chegaram nem perto da alta que o Santander apresentou em 2020.
+
+Para finalizar, faremos o box plot dos índices de reclamação dos bancos em questão e também de todos os bancos consolidados.
+
+
+```{r, fig.align = 'center', fig.height=15, fig.width=16}
+# Boxplot do numero de reclamações por cliente ----
+## Bradesco
+filter(hist_reclam_2,
+       Instituição.financeira == 'BRADESCO (conglomerado)') %>%
+  ggplot(aes(x = Ano,
+             y = Quantidade.total.de.reclamações/Quantidade.total.de.clientes...CCS.e.SCR,
+             group = Ano))+
+             #fill = Tipo))+
+  geom_boxplot() +
+  labs(x = '', y = '',
+       title = 'Bradesco')+
+       #subtitle = '')+
+  scale_y_continuous(labels = percent)+
+  theme_bw()+
+  theme(axis.text.x = element_text(hjust = 1, angle = 50)) -> box_1
+
+# Banco do Brasil
+filter(hist_reclam_2,
+       Instituição.financeira == 'BB (conglomerado)') %>%
+  ggplot(aes(x = Ano,
+             y = Quantidade.total.de.reclamações/Quantidade.total.de.clientes...CCS.e.SCR,
+             group = Ano))+
+  #fill = Tipo))+
+  geom_boxplot() +
+  labs(x = '', y = '',
+       title = 'Banco do Brasil')+
+       #subtitle = '')+
+  scale_y_continuous(labels = percent)+
+  theme_bw()+
+  theme(axis.text.x = element_text(hjust = 1, angle = 50)) -> box_2
+
+## Caixa economica federal
+filter(hist_reclam_2,
+                         Instituição.financeira == 'CAIXA ECONÔMICA FEDERAL (conglomerado)') %>%
+  ggplot(aes(x = Ano,
+             y = Quantidade.total.de.reclamações/Quantidade.total.de.clientes...CCS.e.SCR,
+             group = Ano))+
+  #fill = Tipo))+
+  geom_boxplot() +
+  labs(x = '', y = '',
+       title = 'Caixa Econômica Federal')+
+  #subtitle = '')+
+  scale_y_continuous(labels = percent)+
+  theme_bw()+
+  theme(axis.text.x = element_text(hjust = 1, angle = 50)) -> box_3
+
+## ITAU
+filter(hist_reclam_2,
+                Instituição.financeira == 'ITAU (conglomerado)') %>%
+  ggplot(aes(x = Ano,
+             y = Quantidade.total.de.reclamações/Quantidade.total.de.clientes...CCS.e.SCR,
+             group = Ano))+
+  geom_boxplot() +
+  labs(x = '', y = '',
+       title = 'Itau')+
+  scale_y_continuous(labels = percent)+
+  theme_bw()+
+  theme(axis.text.x = element_text(hjust = 1, angle = 50)) -> box_4
+
+## Santander
+filter(hist_reclam_2,
+       Instituição.financeira == 'SANTANDER (conglomerado)') %>%
+  ggplot(aes(x = Ano,
+             y = Quantidade.total.de.reclamações/Quantidade.total.de.clientes...CCS.e.SCR,
+             group = Ano))+
+  geom_boxplot() +
+  labs(x = '', y = '',
+       title = 'Santander')+
+  scale_y_continuous(labels = percent)+
+  theme_bw()+
+  theme(axis.text.x = element_text(hjust = 1, angle = 50)) -> box_5
+
+## Geral
+filter(hist_reclam_2,
+       Instituição.financeira %in% top5Bancos) %>%
+  ggplot(aes(x = Ano,
+             y = Quantidade.total.de.reclamações/Quantidade.total.de.clientes...CCS.e.SCR,
+             group = Ano))+
+  geom_boxplot() +
+  labs(x = '', y = '',
+       title = 'Top 5 bancos')+
+  scale_y_continuous(labels = percent)+
+  theme_bw()+
+  theme(axis.text.x = element_text(hjust = 1, angle = 50)) -> box_6
+
+## Juntando todos os box plot
+((box_1 + box_2) /
+    (box_3 + box_4) /
+    (box_5 + box_6))+
+  plot_annotation(
+  title = "Box Plot - Referente às 5 maiores instituições financeiras",
+  subtitle = "Evolução anual do número de reclamações por cliente médio",
+  caption = "Fonte: BCB\nElaboração própria") & theme_minimal() +
+  theme(legend.title = element_blank(),
+        plot.title = element_text(size = 25),
+        plot.subtitle = element_text(size = 20),
+        text = element_text(size = 16))
+```
+
+Como podemos perceber no gráfico acima, individualmente os bancos não apresentam muitos outliers. A distribuição dos dados não vinha sendo tão abrangente até o ano de 2020, onde todos os bancos sentiram o efeito do aumento do índice de reclamações de modo geral.
+
+É nítida a tendência de queda no índice de reclamações de modo geral. Tal inclinação pode ser melhor observada quando somamos os dados de os bancos no Boxplot Top 5 Bancos.
+
+
+## Tipos de reclamações
+
+Agora olharemos para a base de dados `hist_reclam_2`, com o objetivo de ver quais são os maiores tipo de reclamação entre os bancos em questão, já que nessa relação teremos a disposição mais de 200 tipos de reclamações diferentes reguladas pelo Banco Central.
+
+Primeiramente vamos filtrar os Top 5 maiores bancos:
+
+
+```{r}
+## filtrando os maiores bancos
+Top5_reclam <- hist_reclam %>%
+  filter(Instituição.financeira %in% top5Bancos)
+
+```
+
+
+Agora, para ter uma ideia mais global da evolução dos maiores tipos de reclamação, somaremos todos os tipos de reclamação por ano e trimestre.
+
+Primeiramente informamos quais as datas queremos somar:
+
+```{r}
+datas <- c("2017 Q1", "2017 Q2","2017 Q3","2017 Q4",
+           "2018 Q1", "2018 Q2","2018 Q3","2018 Q4",
+           "2019 Q1", "2019 Q2","2019 Q3","2019 Q4",
+           "2020 Q1", "2020 Q2","2020 Q3","2020 Q4",
+           "2021 Q1", "2021 Q2","2021 Q3","2021 Q4")
+
+```
+
+Logo em seguida devemos somar os dados condicionado a data e tipo de reclamação.
+
+```{r}
+## somando todos os tipos de reclamações por trimestre
+plot_top_reclam <- data.frame()
+plot_top_reclam1 <- data.frame()
+
+for (i in datas) {
+  plot_top_reclam1 <- filter(Top5_reclam, date_2 == i)
+  plot_top_reclam1 <- aggregate(Quantidade.total.de.reclamações ~ Irregularidade, plot_top_reclam1, sum)
+  plot_top_reclam1 %>%
+    mutate(date = i) -> plot_top_reclam1
+  plot_top_reclam <- rbind(plot_top_reclam, plot_top_reclam1)
+}
+```
+
+Acertando nome das colunas e agrupando os dados por trimestre.
+
+```{r}
+colnames(plot_top_reclam) <-  c('Irregularidade', 'quantreclam', 'date')
+
+plot_top_reclam %>%
+  group_by(date) %>% 
+  top_n(1, quantreclam) -> data_plot_top_reclam
+
+```
+
+Por fim, executando o gráfico de barras que retornará os maiores tipos de reclamação por trimestre, considerando todos os 5 maiores instituições.
+
+```{r, fig.align = 'center', fig.height=10, fig.width=15}
+data_plot_top_reclam %>% 
+  ggplot()+
+  geom_bar(aes(x = date, y = quantreclam,
+               fill = Irregularidade),
+           stat="identity",
+           width=.8,
+           position = "dodge" )+
+  labs(x = 'Período', y = 'Quantidade Total de Reclamações',
+       title = 'Quantidade Total do Maior Tipo de Reclamação no Período',
+       subtitle = 'Referente às 5 maiores instituições financeiras (por Trimestre)',
+       caption = "Fonte: BCB\nElaboração própria") +
+  scale_y_continuous(labels = comma) +
+  guides(fill = guide_legend(nrow = 7))+
+  scale_fill_viridis_d()+
+  theme_minimal()+
+  theme(legend.position = "bottom",
+        legend.margin = margin(),
+        legend.title = element_blank(),
+        legend.text = element_text(size = 13.2),
+        plot.title = element_text(size = 30),
+        plot.subtitle = element_text(size = 20),
+        text = element_text(size = 16),
+        axis.text.x = element_text(angle = 45, hjust = 1))
+
+
+```
+
+O gráfico acima evidencia que o tipo de reclamação mais recorrente era a insatisfação do serviço prestado pelas agencias, mas em 2018 isso muda. Tal evidência corrobora para a mudança no perfil das reclamações, uma vez que os bancos estão em processo de redução do número de agência e digitalização dos processos bancários.
+
+Do quarto trimestre de 2018 até o quarto trimestre de 2019 o principal tipo de reclamação passa a ser falha de comunicação ou de venda de produtos ou serviços.
+
+Em 2020 ocorreu outra mudança bem interessante, o tipo de reclamação de maior relevância do período passa a ser renegociações de dívidas. Como já mencionado em 2020 a população estava vivendo o ápice do lockdown, muitas pessoas foram demitidas ou foram obrigadas a fechar seu estabelecimento e, consequentemente, perderam capacidade de pagamento. O resultado desse cenário foi aumento da demanda por renegociações de dívidas, que por sua vez elevaram o nível de reclamações desse nicho.
+
+Já em 2021 vemos que as principais reclamações estão ligadas ao serviço de crédito fornecido. Esse também pode ser mais uma consequência da COVID-19, já muitas pessoas passaram a ser tomadoras de crédito por conta da crise pós pandemia.
+
+Também pode existir alguma ligação com o aumento da concorrência pelo mercado de cartão de crédito. Normalmente, quando há muita concorrência para determinado produto, as instituições elevam suas metas para obter maior market share. Tal movimento das instituições do setor pode reduzir a qualidade das informações passadas ao consumidor no ato da venda, abrindo uma brecha para futuras reclamações.
+
+Agora veremos a evolução das principais reclamações por trimestre de cada uma das 5 instituições analisadas. 
+
+Tratamento final dos dados referentes ao Bradesco:
+
+```{r}
+## BRADESCO
+filter(hist_reclam,Instituição.financeira == 'BRADESCO (conglomerado)') %>%
+  mutate(Trimestre = as.yearqtr(as.Date(paste0(Ano,'-', ifelse(Trimestre == 2, 4,
+                                                               ifelse(Trimestre == 3, 7,
+                                                                      ifelse(Trimestre == 4, 10, 1))),
+                                               '-', 01)))) %>% 
+  group_by(Trimestre) %>% 
+  dplyr::select(c(`Trimestre`, `Instituição.financeira`, `Irregularidade`,`Quantidade.total.de.reclamações`)) %>%
+  group_by(Trimestre) %>% 
+  top_n(1, Quantidade.total.de.reclamações) -> Top_reclam_bra
+
+colnames(Top_reclam_bra) <-  c('date', 'instituicao', 'Irregularidade', 'quantreclam')
+
+```
+
+Executando o gráfico das maiores reclamações referentes ao Bradesco:
+
+```{r, fig.align = 'center', fig.height=10, fig.width=15}
+Top_reclam_bra %>% 
+  ggplot()+
+  geom_bar(aes(x = date, y = quantreclam,
+               fill = Irregularidade),
+           stat="identity",
+           width=.2,
+           position = "dodge" )+
+  labs(x = 'Período', y = 'Quantidade Total de Reclamações',
+       title = 'Quantidade Total do Maior Tipo de Reclamação no Período',
+       subtitle = 'Referente ao Banco Bradesco (por Trimestre)',
+       caption = "Fonte: BCB\nElaboração própria") +
+  scale_y_continuous(labels = comma) +
+  guides(fill = guide_legend(nrow = 9))+
+  scale_fill_viridis_d()+
+  theme_minimal()+
+  theme(legend.position = "bottom",
+        legend.margin = margin(),
+        legend.title = element_blank(),
+        legend.text = element_text(size = 13.2),
+        plot.title = element_text(size = 30),
+        plot.subtitle = element_text(size = 20),
+        text = element_text(size = 16),
+        axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+
+Os tipos de reclamação do Bradesco variam bastante com o tempo. Entre 2017 e 2019 a maioria das reclamações estão relacionadas com a oferta de serviço ou informação de forma inadequada. Passando esse período e avançando para 2019 o teor das principais reclamações passam a estar mais relacionadas as operações de crédito no geral, seja credito consignado, cartão de credito, entre outros.
+
+Seguindo a tendência vista quando analisado os dados consolidados dos top 5 instituições financeiras, em 2020 houve um crescimento abrupto das reclamações relacionadas a renegociação de dívida.
+
+
+A próxima instituição será o Banco do Brasil, faremos então um tratamento final dos dados:
+
+```{r}
+## BANCO DO BRASIL
+filter(hist_reclam,Instituição.financeira == 'BB (conglomerado)') %>%
+  mutate(Trimestre = as.yearqtr(as.Date(paste0(Ano,'-', ifelse(Trimestre == 2, 4,
+                                                               ifelse(Trimestre == 3, 7,
+                                                                      ifelse(Trimestre == 4, 10, 1))),
+                                               '-', 01)))) %>% 
+  group_by(Trimestre) %>% 
+  dplyr::select(c(`Trimestre`, `Instituição.financeira`, `Irregularidade`,`Quantidade.total.de.reclamações`)) %>%
+  group_by(Trimestre) %>% 
+  top_n(1, Quantidade.total.de.reclamações) -> Top_reclam_BB
+
+colnames(Top_reclam_BB) <-  c('date', 'instituicao', 'Irregularidade', 'quantreclam')
+```
+
+Executando o gráfico das maiores reclamações referentes ao Bando do Brasil:
+
+```{r, fig.align = 'center', fig.height=10, fig.width=15}
+Top_reclam_BB %>% 
+  ggplot()+
+  geom_bar(aes(x = date, y = quantreclam,
+               fill = Irregularidade),
+           stat="identity",
+           width=.2,
+           position = "dodge" )+
+  labs(x = 'Período', y = 'Quantidade Total de Reclamações',
+       title = 'Quantidade Total do Maior Tipo de Reclamação no Período',
+       subtitle = 'Referente ao Banco do Brasil (por Trimestre)',
+       caption = "Fonte: BCB\nElaboração própria") +
+  scale_y_continuous(labels = comma) +
+  guides(fill = guide_legend(nrow = 4))+
+  scale_fill_viridis_d()+
+  theme_minimal()+
+  theme(legend.position = "bottom",
+        legend.margin = margin(),
+        legend.title = element_blank(),
+        legend.text = element_text(size = 13.2),
+        plot.title = element_text(size = 30),
+        plot.subtitle = element_text(size = 20),
+        text = element_text(size = 16),
+        axis.text.x = element_text(angle = 45, hjust = 1))
+```
+A variabilidade dos tipos de reclamações no Banco do Brasil é pequena. A reclamação mais frequente, durante todo o período analisado, é o atendimento nas agências.
+
+Os efeitos da COVID-19 são bem claros vão de encontro com outros apontamentos feitos no tópico anterior. Há aumento das reclamações com operações de renegociação de dívidas em 2020 e, em 2021, das operações com cartão de crédito
+
+
+A próxima instituição será a da Caixa Econômica Federal. Faremos então um breve tratamento dos dados:
+
+
+```{r}
+
+## CAIXA ECONOMICA
+filter(hist_reclam,Instituição.financeira == 'CAIXA ECONÔMICA FEDERAL (conglomerado)') %>%
+  mutate(Trimestre = as.yearqtr(as.Date(paste0(Ano,'-', ifelse(Trimestre == 2, 4,
+                                                               ifelse(Trimestre == 3, 7,
+                                                                      ifelse(Trimestre == 4, 10, 1))),
+                                               '-', 01)))) %>% 
+  group_by(Trimestre) %>% 
+  dplyr::select(c(`Trimestre`, `Instituição.financeira`, `Irregularidade`,`Quantidade.total.de.reclamações`)) %>%
+  group_by(Trimestre) %>% 
+  top_n(1, Quantidade.total.de.reclamações) -> Top_reclam_caixa
+
+colnames(Top_reclam_caixa) <-  c('date', 'instituicao', 'Irregularidade', 'quantreclam')
+```
+
+Executando o gráfico das maiores reclamações referentes a Caixa Econômica Federal:
+
+```{r, fig.align = 'center', fig.height=10, fig.width=18}
+Top_reclam_caixa %>% 
+  ggplot()+
+  geom_bar(aes(x = date, y = quantreclam,
+               fill = Irregularidade),
+           stat="identity",
+           width=.2,
+           position = "dodge" )+
+  labs(x = 'Período', y = 'Quantidade Total de Reclamações',
+       title = 'Quantidade Total do Maior Tipo de Reclamação no Período',
+       subtitle = 'Referente à Caixa Econômica Federal (por Trimestre)',
+       caption = "Fonte: BCB\nElaboração própria") +
+  scale_y_continuous(labels = comma) +
+  guides(fill = guide_legend(nrow = 5))+
+  scale_fill_viridis_d()+
+  theme_minimal()+
+  theme(legend.position = "bottom",
+        legend.margin = margin(),
+        legend.title = element_blank(),
+        legend.text = element_text(size = 13.2),
+        plot.title = element_text(size = 30),
+        plot.subtitle = element_text(size = 20),
+        text = element_text(size = 16),
+        axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+No caso da Caixa econômica percebemos uma semelhança grande com o Banco do Brasil, já que a reclamação de maior frequência é o atendimento nas agências.
+
+Também é possível perceber características distintas, mas que também estão relacionadas a pandemia. O aumento das reclamações ao Internet Banking é um exemplo, que pode ser explicado pela mudança forçada do perfil dos clientes, que a partir de 2020 são obrigados a fazer muitos mais operações usando as plataformas digitais. Existe também uma dificuldade das instituições se adequarem a nova realidade, abrindo brecha para mais reclamações.
+
+As reclamações relacionadas ao Auxílio Brasil ainda não possuem rótulo específico no Banco central, por conta disso são lançados como "assuntos diversos".
+
+A próxima instituição será a da Banco Itaú. Faremos então um breve tratamento dos dados:
+
+
+```{r}
+## ITAU
+filter(hist_reclam,Instituição.financeira == 'ITAU (conglomerado)') %>%
+  mutate(Trimestre = as.yearqtr(as.Date(paste0(Ano,'-', ifelse(Trimestre == 2, 4,
+                                                               ifelse(Trimestre == 3, 7,
+                                                                      ifelse(Trimestre == 4, 10, 1))),
+                                               '-', 01)))) %>% 
+  group_by(Trimestre) %>% 
+  dplyr::select(c(`Trimestre`, `Instituição.financeira`, `Irregularidade`,`Quantidade.total.de.reclamações`)) %>%
+  group_by(Trimestre) %>% 
+  top_n(1, Quantidade.total.de.reclamações) -> Top_reclam_itau
+
+colnames(Top_reclam_itau) <-  c('date', 'instituicao', 'Irregularidade', 'quantreclam')
+```
+
+Executando o gráfico das maiores reclamações referentes ao Itaú:
+
+```{r, fig.align = 'center', fig.height=10, fig.width=15}
+Top_reclam_itau %>% 
+  ggplot()+
+  geom_bar(aes(x = date, y = quantreclam,
+               fill = Irregularidade),
+           stat="identity",
+           width=.2,
+           position = "dodge" )+
+  labs(x = 'Período', y = 'Quantidade Total de Reclamações',
+       title = 'Quantidade Total do Maior Tipo de Reclamação no Período',
+       subtitle = 'Referente ao Banco Itau (por Trimestre)',
+       caption = "Fonte: BCB\nElaboração própria") +
+  scale_y_continuous(labels = comma) +
+  guides(fill = guide_legend(nrow = 4))+
+  scale_fill_viridis_d()+
+  theme_minimal()+
+  theme(legend.position = "bottom",
+        legend.margin = margin(),
+        legend.title = element_blank(),
+        legend.text = element_text(size = 13.2),
+        plot.title = element_text(size = 30),
+        plot.subtitle = element_text(size = 20),
+        text = element_text(size = 16),
+        axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+O Itaú tem muita variabilidade nos tipos de reclamação. A maior parte das reclamações estão relacionadas com falha na oferta ou na informação de produtos e serviços. A outra classe de reclamações com grande número de aparições são os relacionados com operações de crédito, cartão de crédito e até crédito consignado.
+
+Durante a pandemia também houve aumento das reclamações, mas as relacionadas aos cartões de crédito foram as maiores e não as relacionadas com renegociação de dívidas.
+
+
+Tratamento final dos dados referentes ao Santander:
+
+
+```{r}
+#'SANTANDER 
+filter(hist_reclam,Instituição.financeira == 'SANTANDER (conglomerado)') %>%
+  mutate(Trimestre = as.yearqtr(as.Date(paste0(Ano,'-', ifelse(Trimestre == 2, 4,
+                                                               ifelse(Trimestre == 3, 7,
+                                                                      ifelse(Trimestre == 4, 10, 1))),
+                                               '-', 01)))) %>% 
+  group_by(Trimestre) %>% 
+  dplyr::select(c(`Trimestre`, `Instituição.financeira`, `Irregularidade`,`Quantidade.total.de.reclamações`)) %>%
+  group_by(Trimestre) %>% 
+  top_n(1, Quantidade.total.de.reclamações) -> Top_reclam_sant
+
+colnames(Top_reclam_sant) <-  c('date', 'instituicao', 'Irregularidade', 'quantreclam')
+```
+
+Executando o gráfico das maiores reclamações referentes ao Santander:
+
+```{r, fig.align = 'center', fig.height=13, fig.width=18}
+Top_reclam_sant %>% 
+  ggplot()+
+  geom_bar(aes(x = date, y = quantreclam,
+               fill = Irregularidade),
+           stat="identity",
+           width=.2,
+           position = "dodge" )+
+  labs(x = 'Período', y = 'Quantidade Total de Reclamações',
+       title = 'Quantidade Total do Maior Tipo de Reclamação no Período',
+       subtitle = 'Referente ao Santander (por Trimestre)',
+       caption = "Fonte: BCB\nElaboração própria") +
+  scale_y_continuous(labels = comma) +
+  guides(fill = guide_legend(nrow = 10))+
+  scale_fill_viridis_d()+
+  theme_minimal()+
+  theme(legend.position = "bottom",
+        legend.margin = margin(),
+        legend.title = element_blank(),
+        legend.text = element_text(size = 15),
+        plot.title = element_text(size = 30),
+        plot.subtitle = element_text(size = 20),
+        text = element_text(size = 16),
+        axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
+
+
+O Banco Santander tem grande variabilidade de tipos de reclamação preponderantes, mas os principais nichos são oferta inadequada de produtos ou informações e em operações de crédito no geral.
+
+Assim como as outras instituições, houve grande aumento das renegociações de dívidas em 2020 por conta da COVD-19.
+
+## Núvem de Palavras
+
+Nesse último tópico faremos uma análise da nuvem de palavras resultante dos diversos tipos de reclamações que mais apareceram entre 2017 e 2021. Esse método facilita a visualização das palavras vinculadas as reclamações, considerando que ordem de importância tem relação com a frequência que ela aparece.
+
+Primeiramente, faremos a filtragem das instituições de interesse, os 5 maiores bancos, das reclamações e suas respectivas frequências. Depois, criamos a variável `data_nuvem`, que contém os tipos de irregularidade e a soma do número de vezes que se repetiram.
+
+Por fim, criaremos a variável `top5_corpus` que vai representar todos os tipos de reclamações multiplicadas pela quantidade de vezes que apareceram entre 2017 e 2021.
+
+```{r eval=FALSE, warning=FALSE, , message=FALSE, include=FALSE}
+top5Bancos <- c('BRADESCO (conglomerado)', 'BB (conglomerado)',
+                'CAIXA ECONÔMICA FEDERAL (conglomerado)',
+                'ITAU (conglomerado)', 'SANTANDER (conglomerado)')
+
+hist_reclam %>%
+  filter(Instituição.financeira %in% top5Bancos)%>%
+  aggregate(Quantidade.total.de.reclamações ~ Irregularidade, sum) -> data_nuvem
+
+colnames(data_nuvem) <-  c('Irregularidade', 'quantreclam')
+
+top5_corpus <- str_dup(c(paste(data_nuvem$Irregularidade, "")), data_nuvem$quantreclam)
+```
+
+Criando Corpus de palavras a partir das instituições desejadas:
+
+```{r eval=FALSE, warning=FALSE, , message=FALSE, include=FALSE}
+
+# Criando corpus dos maiores bancos
+top5_corpus <- Corpus(VectorSource(top5_corpus))
+
+```
+
+Limpando os dados, removendo pontuações, palavras inúteis através da função `stopwords`, letras maiúsculas, etc:
+
+```{r eval=FALSE, warning=FALSE, , message=FALSE, include=FALSE}
+word_list <- c('relacionada', 'relacionadas', 'exceto', 'relativas',
+               'adequado', 'não', 'irregularidades', 'irregularidade', 'operações', 'operaçõ')
+#Tirando letras maiúsculas
+top5_corpus <- tm_map(top5_corpus, PlainTextDocument)
+top5_corpus <- tm_map(top5_corpus, tolower)
+#Removendo pontuação
+top5_corpus <- tm_map(top5_corpus, removePunctuation)
+#Retirando as palavras que não agregam
+top5_corpus <- tm_map(top5_corpus, removeWords, stopwords("pt"))
+top5_corpus <- tm_map(top5_corpus, removeWords, word_list)
+# Removendo sinônimos
+top5_corpus <- tm_map(top5_corpus, stemDocument)
+# Retirando espaços em branco
+top5_corpus <- tm_map(top5_corpus, stripWhitespace)
+```
+
+Criando data frame com as palavras e suas respectivas frequências de repetição:
+
+```{r eval=FALSE, warning=FALSE, , message=FALSE, include=FALSE}
+#fazendo dataframe com base nas frequencias das palavras
+DTM <- TermDocumentMatrix(top5_corpus)
+mat <- as.matrix(DTM)
+f <- sort(rowSums(mat), decreasing=TRUE)
+
+dataframe_nuvem <- data.frame(word = names(f), freq = f)
+```
+
+Por fim, executamos a função `wordcloud` para gerar a nossa nuvem de palavras referente a todos os tipos de reclamações entre 2017 e 2021 das 5 maiores instituições financeiras do país.
+
+```{r message=FALSE, warning=FALSE, , message=FALSE, include=FALSE}
+dataframe_nuvem <- read.csv('dataframe_nuvem')
+```
+```{r, fig.align = 'center', warning=FALSE, , message=FALSE}
+
+set.seed(100)
+wordcloud(words = dataframe_nuvem$word, freq = dataframe_nuvem$freq,
+          min.freq = 3, max.words = 200, random.order = FALSE,
+          rot.per=0.30, colors = brewer.pal(10, "BrBG"))
+```
+
+
+# Conclusão
+
+Através da análise das reclamações dos principais bancos do país é possível perceber movimentos além dos relacionados a qualidade do atendimento em si. É possível observar claramente os efeitos da COVID-19 na relação entre os clientes e as instituições financeiras.
+
+Também é possível identificar uma mudança nas características do segmento bancário como um todo. No início do período analisado, o maior tipo de reclamação estava relacionado com o atendimento nas agências. Aos poucos isso foi mudando para outros tipos de reclamações, mais relacionadas com os serviços e produtos do banco em si, como crédito, renegociações, etc. Esse movimento pode estar ligado com a tendência de fechamento de agências, expansão dos canais digitais e automação do segmento como um todo.
+
